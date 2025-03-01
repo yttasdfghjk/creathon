@@ -8,52 +8,67 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 contract BikeNFT is ERC721URIStorage, AccessControl {
     using SafeMath for uint256;
 
-    // Roles for authorized issuers
+    // Define roles for minting
     bytes32 public constant POLICE_ROLE = keccak256("POLICE_ROLE");
     bytes32 public constant SELLER_ROLE = keccak256("SELLER_ROLE");
 
-    // Police wallet for transaction fees
+    // Address for police transaction fee
     address payable public policeWallet;
 
-    // Mapping of token ID to pending claims (buyers who purchased a bike)
-    mapping(uint256 => address) public pendingClaims;
-
-    // Mapping for storing additional metadata (Bike ID, Owner ID, Contact Info)
+    // Struct for metadata storage
     struct BikeMetadata {
         string bikeId;
         string ownerId;
         string contactInfo;
     }
+
+    // Mapping: Token ID → Metadata
     mapping(uint256 => BikeMetadata) public bikeMetadata;
+
+    // Mapping: Token ID → Pending Claim Address
+    mapping(uint256 => address) public pendingClaims;
+
+    // Event logs
+    event BikeMinted(uint256 indexed tokenId, address indexed issuer, address indexed buyer);
+    event BikeClaimed(uint256 indexed tokenId, address indexed newOwner);
+    event BikeSold(uint256 indexed tokenId, address indexed oldOwner, address indexed newOwner, uint256 price, uint256 policeFee);
 
     constructor(address payable _policeWallet) ERC721("BikeNFT", "BIKE") {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _setupRole(POLICE_ROLE, msg.sender);
+        _setupRole(SELLER_ROLE, msg.sender);
         policeWallet = _policeWallet;
     }
 
-    /// @notice Mint a new Bike NFT (only Police or Seller)
+    /// @notice Mint a new Bike NFT (Only Police or Seller)
     function mintBikeNFT(
         uint256 _tokenId,
         string memory _tokenURI,
         string memory _bikeId,
         string memory _ownerId,
         string memory _contactInfo,
-        address _buyer // Buyer who will claim the NFT
-    ) public onlyRole(POLICE_ROLE) onlyRole(SELLER_ROLE) {
+        address _buyer // Buyer who must claim the NFT
+    ) public {
+        require(hasRole(POLICE_ROLE, msg.sender) || hasRole(SELLER_ROLE, msg.sender), "Unauthorized minter");
+
         _mint(address(this), _tokenId); // Mint to contract first
         _setTokenURI(_tokenId, _tokenURI);
         pendingClaims[_tokenId] = _buyer; // Mark NFT as claimable
 
         // Store metadata
         bikeMetadata[_tokenId] = BikeMetadata(_bikeId, _ownerId, _contactInfo);
+
+        emit BikeMinted(_tokenId, msg.sender, _buyer);
     }
 
     /// @notice Claim NFT after purchasing a physical bike
     function claimBike(uint256 _tokenId) public {
         require(pendingClaims[_tokenId] == msg.sender, "Not authorized to claim");
+        
         _transfer(address(this), msg.sender, _tokenId);
         pendingClaims[_tokenId] = address(0); // Remove claim
+
+        emit BikeClaimed(_tokenId, msg.sender);
     }
 
     /// @notice Buy and transfer NFT ownership (1% fee to police)
@@ -61,13 +76,14 @@ contract BikeNFT is ERC721URIStorage, AccessControl {
         address currentOwner = ownerOf(_tokenId);
         require(currentOwner != address(0), "NFT does not exist");
         require(msg.sender != currentOwner, "Cannot buy your own NFT");
+        require(msg.value > 0, "Must send ETH to purchase");
 
         // Calculate 1% fee
-        uint256 fee = msg.value.div(100); // 1% of transaction value
-        uint256 sellerAmount = msg.value.sub(fee);
+        uint256 policeFee = msg.value.div(100); // 1% of transaction value
+        uint256 sellerAmount = msg.value.sub(policeFee);
 
         // Transfer funds
-        policeWallet.transfer(fee);
+        policeWallet.transfer(policeFee);
         payable(currentOwner).transfer(sellerAmount);
 
         // Transfer NFT ownership
@@ -76,6 +92,8 @@ contract BikeNFT is ERC721URIStorage, AccessControl {
         // Update metadata with new owner details
         bikeMetadata[_tokenId].ownerId = _newOwnerId;
         bikeMetadata[_tokenId].contactInfo = _newContactInfo;
+
+        emit BikeSold(_tokenId, currentOwner, msg.sender, msg.value, policeFee);
     }
 
     /// @notice Update contact information of the owner
@@ -91,6 +109,7 @@ contract BikeNFT is ERC721URIStorage, AccessControl {
 
     /// @notice Fetch metadata for a given Bike NFT
     function getBikeMetadata(uint256 _tokenId) public view returns (string memory, string memory, string memory) {
+        require(_exists(_tokenId), "NFT does not exist");
         BikeMetadata memory metadata = bikeMetadata[_tokenId];
         return (metadata.bikeId, metadata.ownerId, metadata.contactInfo);
     }
